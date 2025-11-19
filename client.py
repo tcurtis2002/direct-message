@@ -19,21 +19,38 @@ def connect():
             time.sleep(3)
 
 # -------------------------------
-# Continuous Message Receiver
+# Continuous Message Receiver (pub/sub)
 # -------------------------------
-def receive_messages(queue_name):
-    """Continuously receive messages from RabbitMQ with its own connection."""
+def receive_messages():
+    """Continuously receive broadcast messages from RabbitMQ."""
     while True:
         try:
             connection, channel = connect()
-            channel.queue_declare(queue=queue_name)
+
+            # 1️⃣ Declare a fanout exchange for broadcast
+            channel.exchange_declare(exchange='chat', exchange_type='fanout')
+
+            # 2️⃣ Each client gets its OWN temporary queue
+            result = channel.queue_declare(queue='', exclusive=True)
+            queue_name = result.method.queue
+
+            # 3️⃣ Bind this queue to the exchange so it receives all messages
+            channel.queue_bind(exchange='chat', queue=queue_name)
+
             print("👂 Listening for messages...")
 
-            for method, properties, body in channel.consume(queue=queue_name, inactivity_timeout=10):
-                if body:
-                    print("\n💬", body.decode())
-                else:
-                    pass  # no new message during timeout
+            def callback(ch, method, properties, body):
+                print("\n💬", body.decode())
+                # reprint prompt indicator so input line looks nicer
+                print("> ", end='', flush=True)
+
+            channel.basic_consume(
+                queue=queue_name,
+                on_message_callback=callback,
+                auto_ack=True
+            )
+
+            channel.start_consuming()
 
         except pika.exceptions.StreamLostError:
             print("⚠️ Stream lost — reconnecting listener...")
@@ -43,29 +60,38 @@ def receive_messages(queue_name):
             print("⚠️ Connection closed — reconnecting listener...")
             time.sleep(3)
             continue
+        except KeyboardInterrupt:
+            print("\n👋 Listener shutting down.")
+            try:
+                connection.close()
+            except Exception:
+                pass
+            break
         except Exception as e:
             print(f"⚠️ Receiver error: {e}")
             time.sleep(3)
             continue
 
 # -------------------------------
-# Main Client Logic
+# Main Client Logic (sender)
 # -------------------------------
 def main():
-    queue_name = 'chat_queue'
-    print("✅ Starting RabbitMQ Chat Client")
+    print("✅ Starting RabbitMQ Broadcast Chat Client")
+
+    username = input("Enter your username: ")
 
     # Start the receiver thread (it manages its own connection)
-    receiver_thread = threading.Thread(target=receive_messages, args=(queue_name,))
+    receiver_thread = threading.Thread(target=receive_messages)
     receiver_thread.daemon = True
     receiver_thread.start()
 
     # Sender connection (main thread)
     connection, channel = connect()
-    channel.queue_declare(queue=queue_name)
+
+    # Use the SAME fanout exchange for sending
+    channel.exchange_declare(exchange='chat', exchange_type='fanout')
 
     print("\nType your message and press Enter. Type 'exit' to quit.")
-    username = input("Enter your username: ")
 
     while True:
         try:
@@ -73,19 +99,14 @@ def main():
             if message.lower() == "exit":
                 break
 
-            # Reconnect if channel closed
-            if not channel.is_open:
-                print("⚠️ Sender channel closed — reconnecting...")
-                connection, channel = connect()
-                channel.queue_declare(queue=queue_name)
-
             full_message = f"{username}: {message}"
-            channel.basic_publish(exchange='', routing_key=queue_name, body=full_message)
+            # 🔥 Publish to the exchange, not a queue
+            channel.basic_publish(
+                exchange='chat',
+                routing_key='',  # ignored for fanout
+                body=full_message
+            )
 
-        except pika.exceptions.ChannelWrongStateError:
-            print("⚠️ Sender channel error — reconnecting...")
-            connection, channel = connect()
-            channel.queue_declare(queue=queue_name)
         except KeyboardInterrupt:
             print("\n👋 Exiting chat.")
             break
@@ -93,7 +114,10 @@ def main():
             print("⚠️ Sender error:", e)
             time.sleep(2)
 
-    connection.close()
+    try:
+        connection.close()
+    except Exception:
+        pass
     print("🔌 Connection closed. Goodbye!")
 
 # -------------------------------
