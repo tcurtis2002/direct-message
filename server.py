@@ -4,18 +4,25 @@ import time
 # -------------------------------
 # Reliable RabbitMQ Connection
 # -------------------------------
+SERVER_IP = '172.20.210.46'
+RABBIT_USER = 'chatuser'
+RABBIT_PASS = 'password123'
+
 def connect():
-    """Try to connect to RabbitMQ, retrying every 3 seconds if it fails."""
+    creds = pika.PlainCredentials(RABBIT_USER, RABBIT_PASS)
+
+    params = pika.ConnectionParameters(
+        host=SERVER_IP,
+        credentials=creds
+    )
+
     while True:
         try:
-            connection = pika.BlockingConnection(
-                pika.ConnectionParameters(host='localhost')
-            )
+            connection = pika.BlockingConnection(params)
             channel = connection.channel()
-            print("✅ Server connected to RabbitMQ")
             return connection, channel
         except pika.exceptions.AMQPConnectionError:
-            print("❌ Server connection failed. Retrying in 3 seconds...")
+            print("❌ Connection failed. Retrying in 3 seconds...")
             time.sleep(3)
 
 # -------------------------------
