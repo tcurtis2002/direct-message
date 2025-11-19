@@ -1,0 +1,127 @@
+import pika
+import threading
+import time
+import queue
+from PyQt5.QtWidgets import QApplication, QMainWindow, QTextEdit, QLineEdit, QPushButton, QWidget, QVBoxLayout, QInputDialog
+from PyQt5.QtCore import QTimer
+
+
+def connect():
+    """Try to connect to RabbitMQ with retry."""
+    while True:
+        try:
+            connection = pika.BlockingConnection(
+                pika.ConnectionParameters('localhost')
+            )
+            channel = connection.channel()
+            return connection, channel
+        except:
+            print("❌ Connection failed. Retrying in 3s...")
+            time.sleep(3)
+
+
+class ChatWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+
+        self.setWindowTitle("RabbitMQ Chat Client (PyQt5)")
+        self.resize(500, 500)
+
+        # ---- UI Layout ----
+        central = QWidget()
+        self.setCentralWidget(central)
+        layout = QVBoxLayout(central)
+
+        self.chat_box = QTextEdit()
+        self.chat_box.setReadOnly(True)
+
+        self.input = QLineEdit()
+        self.send_button = QPushButton("Send")
+
+        layout.addWidget(self.chat_box)
+        layout.addWidget(self.input)
+        layout.addWidget(self.send_button)
+
+        # ---- Username ----
+        self.username = self.ask_username()
+
+        # ---- RabbitMQ sender ----
+        self.connection = None
+        self.channel = None
+        self.setup_sender()
+
+        # ---- Thread for receiving messages ----
+        self.incoming_messages = queue.Queue()
+        self.receiver_thread = threading.Thread(target=self.receive_messages, daemon=True)
+        self.receiver_thread.start()
+
+        # Timer to check incoming messages
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.process_incoming)
+        self.timer.start(100)
+
+        # Events
+        self.send_button.clicked.connect(self.send_message)
+        self.input.returnPressed.connect(self.send_message)
+
+    # Prompt for username
+    def ask_username(self):
+        username, ok = QInputDialog.getText(self, "Username", "Enter your username:")
+        if ok and username.strip():
+            return username.strip()
+        return "Anonymous"
+
+    # Setup sender connection
+    def setup_sender(self):
+        self.connection, self.channel = connect()
+        self.channel.exchange_declare(exchange="chat", exchange_type="fanout")
+
+    # Send message
+    def send_message(self):
+        msg = self.input.text().strip()
+        if not msg:
+            return
+
+        full = f"{self.username}: {msg}"
+
+        try:
+            self.channel.basic_publish(
+                exchange="chat",
+                routing_key="",
+                body=full
+            )
+        except Exception:
+            self.chat_box.append("⚠️ Error sending message")
+            self.setup_sender()
+
+        self.input.clear()
+
+    # Background thread: receives messages
+    def receive_messages(self):
+        while True:
+            try:
+                conn, ch = connect()
+                ch.exchange_declare(exchange="chat", exchange_type="fanout")
+
+                result = ch.queue_declare(queue="", exclusive=True)
+                qname = result.method.queue
+                ch.queue_bind(exchange="chat", queue=qname)
+
+                for method, properties, body in ch.consume(qname, auto_ack=True):
+                    if body:
+                        self.incoming_messages.put(body.decode())
+            except Exception:
+                time.sleep(3)
+
+    # Move messages from background thread to GUI
+    def process_incoming(self):
+        while not self.incoming_messages.empty():
+            msg = self.incoming_messages.get()
+            self.chat_box.append(msg)
+
+
+if __name__ == "__main__":
+    app = QApplication([])
+    window = ChatWindow()
+    window.show()
+    app.exec_()
