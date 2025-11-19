@@ -19,39 +19,39 @@ def connect():
             time.sleep(3)
 
 # -------------------------------
-# Main Server Logic
+# Main Server Logic (monitor)
 # -------------------------------
 def main():
-    queue_name = 'chat_queue'
     connection, channel = connect()
-    channel.queue_declare(queue=queue_name)
 
-    print("💬 RabbitMQ Chat Server is running... Waiting for messages.")
+    # Use the SAME fanout exchange as the clients
+    channel.exchange_declare(exchange='chat', exchange_type='fanout')
 
-    while True:
-        try:
-            method_frame, properties, body = channel.basic_get(queue=queue_name, auto_ack=True)
-            if body:
-                print(f"📩 {body.decode()}")
-            else:
-                time.sleep(1)  # No message, check again
-        except pika.exceptions.StreamLostError:
-            print("⚠️ Stream lost — reconnecting server...")
-            connection, channel = connect()
-            channel.queue_declare(queue=queue_name)
-        except pika.exceptions.ChannelWrongStateError:
-            print("⚠️ Channel closed unexpectedly — reconnecting server...")
-            connection, channel = connect()
-            channel.queue_declare(queue=queue_name)
-        except KeyboardInterrupt:
-            print("\n👋 Server shutting down gracefully.")
-            break
-        except Exception as e:
-            print(f"⚠️ Unexpected error: {e}")
-            time.sleep(2)
+    # Server gets its own temporary queue too
+    result = channel.queue_declare(queue='', exclusive=True)
+    queue_name = result.method.queue
 
-    connection.close()
-    print("🔌 Server connection closed. Goodbye!")
+    # Bind server's queue to the exchange
+    channel.queue_bind(exchange='chat', queue=queue_name)
+
+    print("💬 RabbitMQ Chat Server monitor is running... Waiting for messages.")
+
+    def callback(ch, method, properties, body):
+        print(f"📩 [SERVER RECEIVED] {body.decode()}")
+
+    channel.basic_consume(
+        queue=queue_name,
+        on_message_callback=callback,
+        auto_ack=True
+    )
+
+    try:
+        channel.start_consuming()
+    except KeyboardInterrupt:
+        print("\n👋 Server shutting down gracefully.")
+    finally:
+        connection.close()
+        print("🔌 Server connection closed. Goodbye!")
 
 # -------------------------------
 # Run Server
